@@ -1,0 +1,283 @@
+diff --git a/submodules/StatisticsUI/BUILD b/submodules/StatisticsUI/BUILD
+index f5dbe1a..b8e4a7c 100644
+--- a/submodules/StatisticsUI/BUILD
++++ b/submodules/StatisticsUI/BUILD
+@@ -35,6 +35,7 @@ swift_library(
+         "//submodules/ContextUI",
+         "//submodules/PremiumUI",
+         "//submodules/InviteLinksUI",
++        "//submodules/GrowthPartnersUI",
+         "//submodules/ShareController",
+         "//submodules/TextFormat",
+         "//submodules/TelegramUI/Components/Stories/AvatarStoryIndicatorComponent",
+diff --git a/submodules/StatisticsUI/Sources/ChannelStatsController.swift b/submodules/StatisticsUI/Sources/ChannelStatsController.swift
+index 9c1ba0e..ab60162 100644
+--- a/submodules/StatisticsUI/Sources/ChannelStatsController.swift
++++ b/submodules/StatisticsUI/Sources/ChannelStatsController.swift
+@@ -26,6 +26,7 @@ import TelegramNotices
+ import ComponentFlow
+ import BoostLevelIconComponent
+ import StarsWithdrawalScreen
++import GrowthPartnersUI
+ 
+ private let initialBoostersDisplayedLimit: Int32 = 5
+ private let initialTransactionsDisplayedLimit: Int32 = 5
+@@ -58,6 +59,8 @@ private final class ChannelStatsControllerArguments {
+     let presentCpmLocked: () -> Void
+     let openEarnStars: () -> Void
+     let dismissInput: () -> Void
++    var offerPartnerSwap: ((EnginePeer) -> Void)?
++    var openPartner: ((EnginePeer) -> Void)?
+     
+     init(context: AccountContext, loadDetailedGraph: @escaping (StatsGraph, Int64) -> Signal<StatsGraph?, NoError>, openPostStats: @escaping (EnginePeer, StatsPostItem) -> Void, openStory: @escaping (EngineStoryItem, UIView) -> Void, contextAction: @escaping (MessageId, ASDisplayNode, ContextGesture?) -> Void, copyBoostLink: @escaping (String) -> Void, shareBoostLink: @escaping (String) -> Void, openBoost: @escaping (ChannelBoostersContext.State.Boost) -> Void, expandBoosters: @escaping () -> Void, openGifts: @escaping () -> Void, createPrepaidGiveaway: @escaping (PrepaidGiveaway) -> Void, updateGiftsSelected: @escaping (Bool) -> Void, updateStarsSelected: @escaping (Bool) -> Void, requestTonWithdraw: @escaping () -> Void, requestStarsWithdraw: @escaping () -> Void, showTimeoutTooltip: @escaping (Int32) -> Void, buyAds: @escaping () -> Void, openMonetizationIntro: @escaping () -> Void, openMonetizationInfo: @escaping () -> Void, openTonTransaction: @escaping (StarsContext.State.Transaction) -> Void, openStarsTransaction: @escaping (StarsContext.State.Transaction) -> Void, expandTransactions: @escaping (Bool) -> Void, updateCpmEnabled: @escaping (Bool) -> Void, presentCpmLocked: @escaping () -> Void, openEarnStars: @escaping () -> Void, dismissInput: @escaping () -> Void) {
+         self.context = context
+@@ -123,6 +126,10 @@ private enum StatsSection: Int32 {
+     case adsCpm
+     
+     case earnStars
++    
++    case partnersOverview
++    case partnersSuggested
++    case partnersLastSwap
+ }
+ 
+ enum StatsPostItem: Equatable {
+@@ -165,6 +172,7 @@ enum StatsPostItem: Equatable {
+ }
+ 
+ private enum StatsEntry: ItemListNodeEntry {
++    case partners(GrowthPartnersEntry)
+     case overviewTitle(PresentationTheme, String, String)
+     case overview(PresentationTheme, ChannelStats)
+     
+@@ -265,6 +273,15 @@ private enum StatsEntry: ItemListNodeEntry {
+     
+     var section: ItemListSectionId {
+         switch self {
++            case let .partners(entry):
++                switch entry.group {
++                case .overview:
++                    return StatsSection.partnersOverview.rawValue
++                case .suggested:
++                    return StatsSection.partnersSuggested.rawValue
++                case .lastSwap:
++                    return StatsSection.partnersLastSwap.rawValue
++                }
+             case .overviewTitle, .overview:
+                 return StatsSection.overview.rawValue
+             case .growthTitle, .growthGraph:
+@@ -330,6 +347,8 @@ private enum StatsEntry: ItemListNodeEntry {
+     
+     var stableId: Int32 {
+         switch self {
++            case let .partners(entry):
++                return 5000 + entry.stableId
+             case .overviewTitle:
+                 return 0
+             case .overview:
+@@ -473,6 +492,12 @@ private enum StatsEntry: ItemListNodeEntry {
+     
+     static func ==(lhs: StatsEntry, rhs: StatsEntry) -> Bool {
+         switch lhs {
++            case let .partners(lhsEntry):
++                if case let .partners(rhsEntry) = rhs, lhsEntry == rhsEntry {
++                    return true
++                } else {
++                    return false
++                }
+             case let .overviewTitle(lhsTheme, lhsText, lhsDates):
+                 if case let .overviewTitle(rhsTheme, rhsText, rhsDates) = rhs, lhsTheme === rhsTheme, lhsText == rhsText, lhsDates == rhsDates {
+                     return true
+@@ -897,6 +922,15 @@ private enum StatsEntry: ItemListNodeEntry {
+     func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
+         let arguments = arguments as! ChannelStatsControllerArguments
+         switch self {
++            case let .partners(entry):
++                if case let .overview(summary) = entry {
++                    return StatsOverviewItem(context: arguments.context, presentationData: presentationData, isGroup: false, stats: summary, sectionId: self.section, style: .blocks)
++                }
++                return entry.item(presentationData: presentationData, context: arguments.context, sectionId: self.section, offerSwap: { peer in
++                    arguments.offerPartnerSwap?(peer)
++                }, openPeer: { peer in
++                    arguments.openPartner?(peer)
++                })!
+             case let .overviewTitle(_, text, dates):
+                 return ItemListSectionHeaderItem(presentationData: presentationData, text: text, accessoryText: ItemListSectionHeaderAccessoryText(value: dates, color: .generic), sectionId: self.section)
+             case let .growthTitle(_, text),
+@@ -1240,6 +1274,7 @@ public enum ChannelStatsSection {
+     case stats
+     case boosts
+     case monetization
++    case partners
+ }
+ 
+ private struct ChannelStatsControllerState: Equatable {
+@@ -1781,9 +1816,13 @@ private func channelStatsControllerEntries(
+     monetizationConfiguration: MonetizationConfiguration,
+     canViewRevenue: Bool,
+     canViewStarsRevenue: Bool,
+-    canJoinRefPrograms: Bool
++    canJoinRefPrograms: Bool,
++    partnersState: GrowthPartnersContext.State
+ ) -> [StatsEntry] {
+     switch state.section {
++    case .partners:
++        let strings = GrowthPartnersStrings(languageCode: presentationData.strings.primaryComponent.languageCode)
++        return growthPartnersEntries(state: partnersState, strings: strings, channelTitle: peer?.compactDisplayTitle ?? "").map { .partners($0) }
+     case .stats:
+         if let data {
+             return statsEntries(
+@@ -2147,6 +2186,8 @@ public func channelStatsController(
+     )
+     
+     let longLoadingSignal: Signal<Bool, NoError> = .single(false) |> then(.single(true) |> delay(2.0, queue: Queue.mainQueue()))
++    let growthPartnersContext = GrowthPartnersContext(engine: context.engine, peerId: peerId)
++    let partnersTabIndex = Atomic<Int?>(value: nil)
+     let previousData = Atomic<ChannelStats?>(value: nil)
+ 
+     let presentationData = updatedPresentationData?.signal ?? context.sharedContext.presentationData
+@@ -2165,10 +2206,11 @@ public func channelStatsController(
+         starsState.get(),
+         starsTransactions.state,
+         peerData,
+-        longLoadingSignal
++        combineLatest(longLoadingSignal, growthPartnersContext.state)
+     )
+     |> deliverOnMainQueue
+-    |> map { presentationData, state, peer, data, messageView, stories, boostData, boostersState, giftsState, revenueState, revenueTransactions, starsState, starsTransactions, peerData, longLoading -> (ItemListControllerState, (ItemListNodeState, Any)) in
++    |> map { presentationData, state, peer, data, messageView, stories, boostData, boostersState, giftsState, revenueState, revenueTransactions, starsState, starsTransactions, peerData, longLoadingAndPartners -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let (longLoading, partnersState) = longLoadingAndPartners
+         let (canViewStats, adsRestricted, _, _) = peerData
+         var canViewRevenue = peerData.2
+         var canViewStarsRevenue = peerData.3
+@@ -2208,6 +2250,10 @@ public func channelStatsController(
+             if revenueState?.stats == nil && starsState?.stats == nil {
+                 emptyStateItem = ItemListLoadingIndicatorEmptyStateItem(theme: presentationData.theme)
+             }
++        case .partners:
++            if !partnersState.hasLoaded {
++                emptyStateItem = ItemListLoadingIndicatorEmptyStateItem(theme: presentationData.theme)
++            }
+         }
+         
+         var existingGroupingKeys = Set<Int64>()
+@@ -2277,6 +2323,8 @@ public func channelStatsController(
+                 } else {
+                     index = 1
+                 }
++            case .partners:
++                index = 0
+             }
+             var tabs: [String] = []
+             if canViewStats {
+@@ -2286,11 +2334,20 @@ public func channelStatsController(
+             if canViewRevenue || canViewStarsRevenue {
+                 tabs.append(presentationData.strings.Stats_Monetization)
+             }
++            if canViewStats && !isGroup {
++                tabs.append(GrowthPartnersStrings(languageCode: presentationData.strings.primaryComponent.languageCode).tabTitle)
++                let _ = partnersTabIndex.swap(tabs.count - 1)
++                if state.section == .partners {
++                    index = tabs.count - 1
++                }
++            } else {
++                let _ = partnersTabIndex.swap(nil)
++            }
+             title = .textWithTabs(peer?.compactDisplayTitle ?? "", tabs, index)
+         }
+         
+         let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: title, leftNavigationButton: leftNavigationButton, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: true)
+-        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: channelStatsControllerEntries(presentationData: presentationData, state: state, peer: peer, data: data, messages: messages, stories: stories, interactions: interactions, boostData: boostData, boostersState: boostersState, giftsState: giftsState, giveawayAvailable: premiumConfiguration.giveawayGiftsPurchaseAvailable, isGroup: isGroup, boostsOnly: boostsOnly, revenueState: revenueState?.stats, revenueTransactions: revenueTransactions, starsState: starsState?.stats, starsTransactions: starsTransactions, adsRestricted: adsRestricted, premiumConfiguration: premiumConfiguration, monetizationConfiguration: monetizationConfiguration, canViewRevenue: canViewRevenue, canViewStarsRevenue: canViewStarsRevenue, canJoinRefPrograms: canJoinRefPrograms), style: .blocks, emptyStateItem: emptyStateItem, headerItem: headerItem, crossfadeState: previous == nil, animateChanges: false)
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: channelStatsControllerEntries(presentationData: presentationData, state: state, peer: peer, data: data, messages: messages, stories: stories, interactions: interactions, boostData: boostData, boostersState: boostersState, giftsState: giftsState, giveawayAvailable: premiumConfiguration.giveawayGiftsPurchaseAvailable, isGroup: isGroup, boostsOnly: boostsOnly, revenueState: revenueState?.stats, revenueTransactions: revenueTransactions, starsState: starsState?.stats, starsTransactions: starsTransactions, adsRestricted: adsRestricted, premiumConfiguration: premiumConfiguration, monetizationConfiguration: monetizationConfiguration, canViewRevenue: canViewRevenue, canViewStarsRevenue: canViewStarsRevenue, canJoinRefPrograms: canJoinRefPrograms, partnersState: partnersState), style: .blocks, emptyStateItem: emptyStateItem, headerItem: headerItem, crossfadeState: previous == nil, animateChanges: false)
+         
+         return (controllerState, (listState, arguments))
+     }
+@@ -2312,6 +2369,9 @@ public func channelStatsController(
+     }
+     controller.titleControlValueChanged = { value in
+         updateState { state in
++            if let partnersIndex = partnersTabIndex.with({ $0 }), value == partnersIndex {
++                return state.withUpdatedSection(.partners)
++            }
+             let canViewStats = canViewStatsValue.with { $0 }
+             let section: ChannelStatsSection
+             switch value {
+@@ -2345,6 +2405,23 @@ public func channelStatsController(
+     controller.didDisappear = { [weak controller] _ in
+         controller?.clearItemNodesHighlight(animated: true)
+     }
++    arguments.offerPartnerSwap = { partner in
++        let _ = (combineLatest(growthPartnersContext.offerSwap(partner: partner), peer.get() |> take(1))
++        |> deliverOnMainQueue).start(next: { link, channel in
++            guard let link else {
++                return
++            }
++            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++            let strings = GrowthPartnersStrings(languageCode: presentationData.strings.primaryComponent.languageCode)
++            let text = strings.offerText(channelTitle: channel?.compactDisplayTitle ?? "", link: link)
++            presentImpl?(context.sharedContext.makeShareScreen(context: context, params: ShareControllerParams(subject: .text(text), updatedPresentationData: updatedPresentationData)))
++        })
++    }
++    arguments.openPartner = { [weak controller] partner in
++        if let navigationController = controller?.navigationController as? NavigationController {
++            context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(partner)))
++        }
++    }
+     openPostStatsImpl = { [weak controller] peer, post in
+         let subject: StatsSubject
+         switch post {
+diff --git a/submodules/StatisticsUI/Sources/StatsOverviewItem.swift b/submodules/StatisticsUI/Sources/StatsOverviewItem.swift
+index 72cb032..6843a85 100644
+--- a/submodules/StatisticsUI/Sources/StatsOverviewItem.swift
++++ b/submodules/StatisticsUI/Sources/StatsOverviewItem.swift
+@@ -11,6 +11,7 @@ import EmojiTextAttachmentView
+ import TextFormat
+ import AccountContext
+ import TelegramStringFormatting
++import GrowthPartnersUI
+ 
+ protocol Stats {
+     
+@@ -40,6 +41,10 @@ extension StarsRevenueStats: Stats {
+     
+ }
+ 
++extension GrowthPartnersSummary: Stats {
++    
++}
++
+ final class StatsOverviewItem: ListViewItem, ItemListItem {
+     let context: AccountContext
+     let presentationData: ItemListPresentationData
+@@ -495,6 +500,31 @@ class StatsOverviewItemNode: ListViewItemNode {
+                 )
+                 
+                 height += topRightItemLayoutAndApply!.0.height * 2.0 + verticalSpacing
++            } else if let stats = item.stats as? GrowthPartnersSummary {
++                let strings = GrowthPartnersStrings(languageCode: item.presentationData.strings.primaryComponent.languageCode)
++                topLeftItemLayoutAndApply = makeTopLeftItemLayout(
++                    item.context,
++                    params.width,
++                    item.presentationData,
++                    "\(stats.swaps)",
++                    strings.swapsTitle,
++                    nil,
++                    .generic
++                )
++                topRightItemLayoutAndApply = makeTopRightItemLayout(
++                    item.context,
++                    params.width,
++                    item.presentationData,
++                    stats.joined > 0 ? "+\(GrowthPartnersStrings.grouped(stats.joined))" : "0",
++                    strings.joinedTitle,
++                    nil,
++                    .generic
++                )
++                if twoColumnLayout {
++                    height += topLeftItemLayoutAndApply!.0.height
++                } else {
++                    height += topLeftItemLayoutAndApply!.0.height * 2.0 + verticalSpacing
++                }
+             } else if let stats = item.stats as? ChannelBoostStatus {
+                 topLeftItemLayoutAndApply = makeTopLeftItemLayout(
+                     item.context,
